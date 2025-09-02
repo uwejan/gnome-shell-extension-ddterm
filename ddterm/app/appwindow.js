@@ -422,19 +422,25 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
                 return;
             }
 
-            this.paned.orientation =
+            const requested_orientation =
                 mode === 'vertical-split' ? Gtk.Orientation.HORIZONTAL : Gtk.Orientation.VERTICAL;
 
-            if (this.is_split)
-                return;
+            // If we're not split yet, use the original logic
+            if (!this.is_split) {
+                this.paned.orientation = requested_orientation;
 
-            if (notebook.get_n_pages() > 1) {
-                notebook.emit('move-to-other-pane', page);
-            } else {
-                const new_page = notebook.new_page();
-                notebook.emit('move-to-other-pane', new_page);
-                new_page.spawn();
+                if (notebook.get_n_pages() > 1) {
+                    notebook.emit('move-to-other-pane', page);
+                } else {
+                    const new_page = notebook.new_page();
+                    notebook.emit('move-to-other-pane', new_page);
+                    new_page.spawn();
+                }
+                return;
             }
+
+            // If we're already split, create a new split within the active notebook's pane
+            this.create_nested_split(notebook, page, requested_orientation);
         });
 
         this.bind_property(
@@ -617,21 +623,57 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         const [width] = this.get_size();
         const tab_label_width = Math.floor(this.tab_label_width * width);
 
-        this.paned.foreach(child => {
-            child.tab_label_width = tab_label_width;
-        });
+        const all_notebooks = this.get_all_notebooks();
+        for (const notebook of all_notebooks) {
+            notebook.tab_label_width = tab_label_width;
+        }
     }
 
     get active_notebook() {
-        return this.paned.get_focus_child();
+        return this.find_active_notebook(this.paned);
+    }
+    
+    find_active_notebook(container) {
+        const focus_child = container.get_focus_child();
+        if (!focus_child) {
+            return null;
+        }
+        
+        // If the focus child is a notebook, return it
+        if (focus_child.constructor.name === 'Notebook') {
+            return focus_child;
+        }
+        
+        // If the focus child is a paned widget, search recursively
+        if (focus_child instanceof Gtk.Paned) {
+            return this.find_active_notebook(focus_child);
+        }
+        
+        return null;
+    }
+    
+    get_all_notebooks(container = this.paned) {
+        const notebooks = [];
+        
+        for (const child of container.get_children()) {
+            if (child.constructor.name === 'Notebook') {
+                notebooks.push(child);
+            } else if (child instanceof Gtk.Paned) {
+                notebooks.push(...this.get_all_notebooks(child));
+            }
+        }
+        
+        return notebooks;
     }
 
     get is_empty() {
-        return this.paned.get_children().every(nb => !nb.get_visible());
+        const all_notebooks = this.get_all_notebooks();
+        return all_notebooks.every(nb => !nb.get_visible());
     }
 
     get is_split() {
-        return this.paned.get_children().every(nb => nb.get_visible());
+        const all_notebooks = this.get_all_notebooks();
+        return all_notebooks.filter(nb => nb.get_visible()).length > 1;
     }
 
     get split_layout() {
@@ -642,6 +684,67 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
             return 'vertical-split';
 
         return 'horizontal-split';
+    }
+
+    create_nested_split(active_notebook, page, orientation) {
+        // Find the parent paned of the active notebook
+        let parent = active_notebook.get_parent();
+        
+        // If parent is not a Paned widget, we can't create a nested split
+        if (!(parent instanceof Gtk.Paned)) {
+            console.warn('Cannot create nested split: parent is not a Paned widget');
+            return;
+        }
+        
+        // Create a new paned widget with the requested orientation
+        const new_paned = new Gtk.Paned({
+            visible: true,
+            border_width: 0,
+            orientation: orientation,
+            hexpand: true,
+            vexpand: true,
+        });
+
+        // Create a new notebook for the split
+        const new_notebook = this.create_notebook();
+
+        // Determine which child of the parent the active notebook is
+        const is_child1 = parent.get_child1() === active_notebook;
+        
+        // Remove the active notebook from its parent
+        parent.remove(active_notebook);
+        
+        // Add the new paned to the parent in place of the active notebook
+        if (is_child1) {
+            parent.pack1(new_paned, true, false);
+        } else {
+            parent.pack2(new_paned, true, false);
+        }
+        
+        // Add the active notebook and new notebook to the new paned
+        new_paned.pack1(active_notebook, true, false);
+        new_paned.pack2(new_notebook, true, false);
+        
+        // Connect the same signal handlers as the main paned
+        new_paned.connect('set-focus-child', (paned, child) => {
+            this.notify('active-notebook');
+        });
+        
+        // Move the page or create a new one
+        if (active_notebook.get_n_pages() > 1) {
+            active_notebook.emit('move-to-other-pane', page);
+        } else {
+            const new_page = new_notebook.new_page();
+            new_page.spawn();
+        }
+        
+        // Set focus to the new notebook
+        new_paned.set_focus_child(new_notebook);
+        new_notebook.grab_focus();
+        
+        // Notify that split layout has changed
+        this.notify('is-split');
+        this.notify('split-layout');
     }
 
     reset_layout() {
@@ -676,9 +779,10 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
     }
 
     update_show_shortcuts() {
-        this.paned.foreach(child => {
-            child.tab_show_shortcuts = this.tab_show_shortcuts && child === this.active_notebook;
-        });
+        const all_notebooks = this.get_all_notebooks();
+        for (const notebook of all_notebooks) {
+            notebook.tab_show_shortcuts = this.tab_show_shortcuts && notebook === this.active_notebook;
+        }
     }
 
     vfunc_grab_focus() {
@@ -687,7 +791,8 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
             return;
         }
 
-        for (const notebook of this.paned.get_children()) {
+        const all_notebooks = this.get_all_notebooks();
+        for (const notebook of all_notebooks) {
             if (notebook.get_visible()) {
                 notebook.grab_focus();
                 return;

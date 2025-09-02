@@ -294,10 +294,16 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
                 this.paned.position = Math.max(this.paned.position - step, this.paned.min_position);
             },
             'focus-other-pane': () => {
-                if (this.active_notebook === notebook1)
-                    notebook2.grab_focus();
-                else
-                    notebook1.grab_focus();
+                const all_notebooks = this.get_all_notebooks();
+                const active = this.active_notebook;
+                
+                if (all_notebooks.length <= 1)
+                    return;
+                
+                // Find current notebook index and switch to the next one
+                const current_index = all_notebooks.indexOf(active);
+                const next_index = (current_index + 1) % all_notebooks.length;
+                all_notebooks[next_index].grab_focus();
             },
         };
 
@@ -751,18 +757,48 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         if (!this.is_split)
             return;
 
-        const dst = this.paned.get_child1();
-        const src = this.paned.get_child2();
+        // Collect all notebooks from the entire structure
+        const all_notebooks = this.get_all_notebooks();
+        if (all_notebooks.length <= 1)
+            return;
+
+        // Use the first notebook as the destination
+        const dst = all_notebooks[0];
         const current_page = this.active_notebook?.current_child;
 
         this.freeze_notify();
 
         try {
-            for (const child of src.get_children()) {
-                const label = src.get_tab_label(child);
+            // Move all pages from other notebooks to the first one
+            for (let i = 1; i < all_notebooks.length; i++) {
+                const src = all_notebooks[i];
+                const pages_to_move = [...src.get_children()]; // Copy the array since we'll be modifying it
+                
+                for (const child of pages_to_move) {
+                    const label = src.get_tab_label(child);
+                    src.remove(child);
+                    dst.insert_page(child, label, -1);
+                }
+            }
 
-                src.remove(child);
-                dst.insert_page(child, label, -1);
+            // Reset to simple two-pane structure
+            const notebook1 = this.paned.get_child1();
+            const notebook2 = this.paned.get_child2();
+            
+            // If either child is a nested paned, replace it with its first notebook
+            if (!(notebook1 instanceof Notebook)) {
+                // Find the first notebook in the nested structure
+                const first_notebook = this.get_all_notebooks(notebook1)[0];
+                this.paned.remove(notebook1);
+                this.paned.pack1(first_notebook, true, false);
+            }
+            
+            if (!(notebook2 instanceof Notebook)) {
+                // Hide the second pane since we've moved everything to the first
+                this.paned.get_child2().set_visible(false);
+            } else {
+                // Hide the second notebook since we've moved all its pages
+                notebook2.set_visible(false);
             }
 
             if (current_page)

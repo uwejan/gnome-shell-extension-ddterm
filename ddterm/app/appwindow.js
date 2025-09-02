@@ -646,7 +646,7 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         }
         
         // If the focus child is a notebook, return it
-        if (focus_child.constructor.name === 'Notebook') {
+        if (focus_child instanceof Notebook) {
             return focus_child;
         }
         
@@ -662,7 +662,7 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         const notebooks = [];
         
         for (const child of container.get_children()) {
-            if (child.constructor.name === 'Notebook') {
+            if (child instanceof Notebook) {
                 notebooks.push(child);
             } else if (child instanceof Gtk.Paned) {
                 notebooks.push(...this.get_all_notebooks(child));
